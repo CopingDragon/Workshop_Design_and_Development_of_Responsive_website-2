@@ -32,8 +32,8 @@
 <script src="js/validate.js"></script>
 <script>
     $(document).ready(function() {
-        // Step 1: Listen to search input and redirect with query params.
-        var refreshTimer;
+        // Step 1: Debounce live search input before refreshing results.
+        var debounceTimer;
         var searchInput = $('#searchInput');
 
         // Focus and move cursor to end
@@ -42,9 +42,9 @@
         searchInput[0].setSelectionRange(val.length, val.length);
 
         searchInput.on('input', function() {
-            clearTimeout(refreshTimer);
+            clearTimeout(debounceTimer);
             var searchValue = $(this).val().trim();
-            refreshTimer = setTimeout(function() {
+            debounceTimer = setTimeout(function() {
                 var url = '?page=1';
                 if (searchValue) {
                     url += '&search=' + encodeURIComponent(searchValue);
@@ -57,7 +57,7 @@
 <?php
 include_once 'db_config.php';
 
-// Step 2: Handle create action and persist uploaded images.
+// Step 2: Handle create action and store product with images.
 if (isset($_POST['action']) && $_POST['action'] === 'create') {
     $name = $_POST['name'];
     $categoryId = $_POST['category_id'];
@@ -88,10 +88,12 @@ if (isset($_POST['action']) && $_POST['action'] === 'create') {
         mkdir($gallery_dir, 0755, true);
     }
 
-    $galleryImagesValue = !empty($gallery_images) ? json_encode($gallery_images) : null;
-    $insertStmt = $connection->prepare("CALL sp_products_insert(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    $insertStmt = mysqli_prepare($connection, 'INSERT INTO products (name, category_id, brand, price, discount, stock, description, long_description, image, gallery_images, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
     if ($insertStmt) {
-        $insertStmt->bind_param(
+        $galleryImagesValue = !empty($gallery_images) ? implode(',', $gallery_images) : null;
+
+        mysqli_stmt_bind_param(
+            $insertStmt,
             'sisdiisssss',
             $name,
             $categoryId,
@@ -106,7 +108,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'create') {
             $status
         );
 
-        if ($insertStmt->execute()) {
+        if (mysqli_stmt_execute($insertStmt)) {
             move_uploaded_file($_FILES['main_image']['tmp_name'], $main_image);
             foreach ($temp_gallery_images as $index => $tmp_name) {
                 move_uploaded_file($tmp_name, $gallery_images[$index]);
@@ -117,8 +119,67 @@ if (isset($_POST['action']) && $_POST['action'] === 'create') {
             setcookie('error', 'Failed to add product. Please try again.', time() + 5);
         }
 
-        $insertStmt->close();
+        mysqli_stmt_close($insertStmt);
         flush_stored_results($connection);
+    }
+}
+
+// Step 3: Handle delete action and cleanup image files.
+if (isset($_POST['action']) && $_POST['action'] === 'delete') {
+    $productId = (int) $_POST['product_id'];
+
+    // 1) Fetch product to get image paths for deletion
+    $query = "SELECT image, gallery_images FROM products WHERE id = ?";
+    $selectStmt = mysqli_prepare($connection, $query);
+    mysqli_stmt_bind_param($selectStmt, 'i', $productId);
+    mysqli_stmt_execute($selectStmt);
+    $selectResult = mysqli_stmt_get_result($selectStmt);
+    $product = mysqli_fetch_assoc($selectResult);
+    mysqli_stmt_close($selectStmt);
+
+    if ($product) {
+        // 2) Delete product from DB
+        $deleteQuery = "DELETE FROM products WHERE id = ?";
+        $deleteStmt = mysqli_prepare($connection, $deleteQuery);
+        mysqli_stmt_bind_param($deleteStmt, 'i', $productId);
+        if (mysqli_stmt_execute($deleteStmt)) {
+            // 3) If DB deletion successful, delete images from disk
+            if (!empty($product['image']) && file_exists($product['image'])) {
+                @unlink($product['image']);
+            }
+            if (!empty($product['gallery_images'])) {
+                foreach (explode(',', $product['gallery_images']) as $galleryImage) {
+                    $galleryImage = trim($galleryImage);
+                    if (!empty($galleryImage) && file_exists($galleryImage)) {
+                        @unlink($galleryImage);
+                    }
+                }
+            }
+            setcookie('success', 'Product deleted successfully!', time() + 5);
+        } else {
+            setcookie('error', 'Failed to delete product. Please try again.', time() + 5);
+        }
+        mysqli_stmt_close($deleteStmt);
+    } else {
+        setcookie('error', 'Product not found. It may have already been deleted.', time() + 5);
+    }
+}
+
+// Step 4: Toggle product status between Active and Inactive.
+if (isset($_POST['action']) && $_POST['action'] === 'change_status') {
+    $productId = $_POST['product_id'];
+    $newStatus = $_POST['new_status'];
+
+    $updateQuery = "UPDATE products SET status=? WHERE id=?";
+    $updateStmt = mysqli_prepare($connection, $updateQuery);
+    if ($updateStmt) {
+        mysqli_stmt_bind_param($updateStmt, 'si', $newStatus, $productId);
+        if (mysqli_stmt_execute($updateStmt)) {
+            setcookie('success', 'Product status updated successfully!', time() + 5);
+        } else {
+            setcookie('error', 'Failed to update product status. Please try again.', time() + 5);
+        }
+        mysqli_stmt_close($updateStmt);
     }
 }
 ?>
@@ -268,17 +329,16 @@ if (isset($_POST['action']) && $_POST['action'] === 'create') {
     <br>
 
     <?php
-    include_once 'db_config.php';
 
-    // Step 3: Apply search filter, then paginate matching products.
+    // Pagination + search logic
     $search = isset($_GET['search']) ? trim($_GET['search']) : '';
     $hasSearch = $search !== '';
 
     if ($hasSearch) {
         $searchLike = '%' . $search . '%';
-        $count_query = "SELECT COUNT(*) AS total FROM products WHERE name LIKE ? OR brand LIKE ? OR description LIKE ? OR long_description LIKE ?";
+        $count_query = "SELECT COUNT(*) AS total FROM products WHERE name LIKE ? OR brand LIKE ? OR description LIKE ?";
         $countStmt = $connection->prepare($count_query);
-        $countStmt->bind_param('ssss', $searchLike, $searchLike, $searchLike, $searchLike);
+        $countStmt->bind_param('sss', $searchLike, $searchLike, $searchLike);
     } else {
         $count_query = "SELECT COUNT(*) AS total FROM products";
         $countStmt = $connection->prepare($count_query);
@@ -351,7 +411,107 @@ if (isset($_POST['action']) && $_POST['action'] === 'create') {
                                 data-bs-target="#viewProductModal<?= (int) $row['id'] ?>">View</button>
 
                             <!-- View Product Modal -->
+                            <?php
+                            $productStatusIsActive = strtolower((string) $row['status']) === 'active' || $row['status'] == 1;
+                            $galleryImagesRaw = trim((string) ($row['gallery_images'] ?? ''));
+                            $galleryImages = [];
 
+                            if ($galleryImagesRaw !== '') {
+                                $galleryImagesArray = explode(',', $galleryImagesRaw);
+
+                                foreach ($galleryImagesArray as $galleryImage) {
+                                    $galleryImage = trim($galleryImage);
+                                    if ($galleryImage !== '') {
+                                        $galleryImages[] = $galleryImage;
+                                    }
+                                }
+                            }
+                            ?>
+                            <div class="modal fade" id="viewProductModal<?= (int) $row['id'] ?>" tabindex="-1" aria-hidden="true">
+                                <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                                    <div class="modal-content border-0 shadow">
+                                        <div class="modal-header bg-light">
+                                            <h5 class="modal-title">Product Details - <?= htmlspecialchars($row['name']) ?></h5>
+                                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                        </div>
+                                        <div class="modal-body p-4">
+                                            <div class="row g-3">
+                                                <div class="col-md-4">
+                                                    <div class="border rounded p-3 h-100 bg-light">
+                                                        <h6 class="mb-3">Basic Info</h6>
+                                                        <p class="mb-2"><strong>ID:</strong> <?= (int) $row['id'] ?></p>
+                                                        <p class="mb-2"><strong>Name:</strong> <?= htmlspecialchars((string) $row['name']) ?></p>
+                                                        <p class="mb-2"><strong>Brand:</strong> <?= htmlspecialchars((string) $row['brand']) ?></p>
+                                                        <p class="mb-2"><strong>Category ID:</strong> <?= htmlspecialchars((string) $row['category_id']) ?></p>
+                                                        <p class="mb-0"><strong>Status:</strong>
+                                                            <span class="badge <?= $productStatusIsActive ? 'bg-success' : 'bg-secondary' ?>">
+                                                                <?= $productStatusIsActive ? 'Active' : 'Inactive' ?>
+                                                            </span>
+                                                        </p>
+                                                    </div>
+                                                </div>
+
+                                                <div class="col-md-4">
+                                                    <div class="border rounded p-3 h-100">
+                                                        <h6 class="mb-3">Pricing and Stock</h6>
+                                                        <p class="mb-2"><strong>Price:</strong> <?= htmlspecialchars((string) $row['price']) ?></p>
+                                                        <p class="mb-2"><strong>Discount:</strong> <?= htmlspecialchars((string) $row['discount']) ?></p>
+                                                        <p class="mb-2"><strong>Discounted Price:</strong> <?= htmlspecialchars((string) ($row['final_price'] ?? '')) ?></p>
+                                                        <p class="mb-2"><strong>Stock:</strong> <?= htmlspecialchars((string) $row['stock']) ?></p>
+
+                                                    </div>
+                                                </div>
+
+                                                <div class="col-md-4">
+                                                    <div class="border rounded p-3 h-100">
+                                                        <h6 class="mb-3">Descriptions</h6>
+                                                        <p class="mb-2"><strong>Description</strong></p>
+                                                        <p class="text-muted small"><?= nl2br(htmlspecialchars((string) $row['description'])) ?></p>
+                                                        <hr>
+                                                        <p class="mb-2"><strong>Long Description</strong></p>
+                                                        <p class="text-muted small mb-0"><?= nl2br(htmlspecialchars((string) $row['long_description'])) ?></p>
+                                                    </div>
+                                                </div>
+
+                                                <div class="col-12">
+                                                    <div class="border rounded p-3">
+                                                        <h6 class="mb-3">Images</h6>
+                                                        <div class="row g-3">
+                                                            <div class="col-md-4">
+                                                                <p class="mb-2"><strong>Main Image</strong></p>
+                                                                <?php if (!empty($row['image'])): ?>
+                                                                    <img src="<?= htmlspecialchars($row['image']) ?>" alt="<?= htmlspecialchars($row['name']) ?>"
+                                                                        class="img-fluid rounded border mb-2">
+                                                                <?php else: ?>
+                                                                    <p class="text-muted mb-2">No main image.</p>
+                                                                <?php endif; ?>
+                                                            </div>
+
+                                                            <div class="col-md-8">
+                                                                <p class="mb-2"><strong>Gallery Images Field</strong></p>
+
+                                                                <?php if (!empty($galleryImages)): ?>
+                                                                    <div class="d-flex flex-wrap gap-2 mt-3">
+                                                                        <?php foreach ($galleryImages as $galleryImage): ?>
+                                                                            <img src="<?= htmlspecialchars($galleryImage) ?>" alt="<?= htmlspecialchars($row['name']) ?>"
+                                                                                class="rounded border" style="width:150px;height:150px;object-fit:cover;">
+                                                                        <?php endforeach; ?>
+                                                                    </div>
+                                                                <?php else: ?>
+                                                                    <p class="text-muted mb-0">No gallery images.</p>
+                                                                <?php endif; ?>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="modal-footer">
+                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
 
                             <!-- Edit Product Button -->
                             <button class="btn btn-sm btn-warning mb-1" data-bs-toggle="modal"
@@ -364,7 +524,33 @@ if (isset($_POST['action']) && $_POST['action'] === 'create') {
                                 data-bs-target="#deleteProductModal<?= (int) $row['id'] ?>">Delete</button>
 
                             <!-- Delete Product Modal -->
-
+                            <!-- Delete Product Modal -->
+                            <div class="modal fade" id="deleteProductModal<?= (int) $row['id'] ?>" tabindex="-1"
+                                aria-labelledby="deleteProductModalLabel<?= (int) $row['id'] ?>" aria-hidden="true">
+                                <div class="modal-dialog">
+                                    <div class="modal-content">
+                                        <form method="post">
+                                            <div class="modal-header">
+                                                <h5 class="modal-title" id="deleteProductModalLabel<?= (int) $row['id'] ?>">
+                                                    Confirm Deletion</h5>
+                                                <button type="button" class="btn-close" data-bs-dismiss="modal"
+                                                    aria-label="Close"></button>
+                                            </div>
+                                            <div class="modal-body">
+                                                Are you sure you want to delete the product
+                                                "<strong><?= htmlspecialchars($row['name']) ?></strong>"?
+                                                <input type="hidden" name="action" value="delete">
+                                                <input type="hidden" name="product_id" value="<?= (int) $row['id'] ?>">
+                                            </div>
+                                            <div class="modal-footer">
+                                                <button type="button" class="btn btn-secondary"
+                                                    data-bs-dismiss="modal">Cancel</button>
+                                                <button type="submit" class="btn btn-danger">Delete Product</button>
+                                            </div>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
 
                             <!-- Change Status Button -->
                             <button class="btn btn-sm btn-secondary mb-1" type="button" data-bs-toggle="modal"
@@ -373,6 +559,35 @@ if (isset($_POST['action']) && $_POST['action'] === 'create') {
                             </button>
 
                             <!-- Change Status Modal -->
+                            <div class="modal fade" id="changeStatusModal<?= (int) $row['id'] ?>" tabindex="-1"
+                                aria-labelledby="changeStatusModalLabel<?= (int) $row['id'] ?>" aria-hidden="true">
+                                <div class="modal-dialog">
+                                    <div class="modal-content">
+                                        <form method="post">
+                                            <div class="modal-header">
+                                                <h5 class="modal-title" id="changeStatusModalLabel<?= (int) $row['id'] ?>">
+                                                    Change Status</h5>
+                                                <button type="button" class="btn-close" data-bs-dismiss="modal"
+                                                    aria-label="Close"></button>
+                                            </div>
+                                            <div class="modal-body">
+                                                Are you sure you want to
+                                                <?= (strtolower((string) $row['status']) === 'active' || $row['status'] == 1) ? 'deactivate' : 'activate' ?>
+                                                the product "<strong><?= htmlspecialchars($row['name']) ?></strong>"?
+                                                <input type="hidden" name="action" value="change_status">
+                                                <input type="hidden" name="product_id" value="<?= (int) $row['id'] ?>">
+                                                <input type="hidden" name="new_status"
+                                                    value="<?= (strtolower((string) $row['status']) === 'active' || $row['status'] == 1) ? 'Inactive' : 'Active' ?>">
+                                            </div>
+                                            <div class="modal-footer">
+                                                <button type="button" class="btn btn-secondary"
+                                                    data-bs-dismiss="modal">Cancel</button>
+                                                <button type="submit" class="btn btn-primary">Change Status</button>
+                                            </div>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
 
 
                         </td>
