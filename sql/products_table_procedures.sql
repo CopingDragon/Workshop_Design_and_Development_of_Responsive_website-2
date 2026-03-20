@@ -62,7 +62,7 @@ BEGIN
         CASE WHEN p_status IN ('Active', 'Inactive') THEN p_status ELSE 'Active' END
     );
 
-    SELECT LAST_INSERT_ID() AS inserted_id;
+    -- SELECT LAST_INSERT_ID() AS inserted_id;
 END $$
 
 CREATE PROCEDURE sp_products_read()
