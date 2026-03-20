@@ -32,7 +32,10 @@
 <script src="js/validate.js"></script>
 <?php
 include_once 'db_config.php';
+
+// Step 1: Load DB connection for pagination queries.
 ?>
+
 <div class="container">
     <br>
     <h1 class="text-center mb-4">Product Management</h1>
@@ -71,15 +74,157 @@ include_once 'db_config.php';
     </div>
 
     <!-- Add product Modal -->
+    <div class="modal fade" id="addProductModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <form method="post" enctype="multipart/form-data" class="h-100 d-flex flex-column" novalidate>
+                    <div class="modal-header">
+                        <h5 class="modal-title">Add Product</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" name="action" value="create">
+
+                        <div class="mb-3">
+                            <label class="form-label">Name</label>
+                            <input type="text" class="form-control" name="name" required
+                                data-validation="required,min,max" data-min="2" data-max="255">
+                            <small id="name_error"></small>
+                        </div>
+
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label">Category ID</label>
+                                <input type="number" step="1" min="0" class="form-control" name="category_id"
+                                    value="0" data-validation="required,number">
+                                <small id="category_id_error"></small>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Brand</label>
+                                <input type="text" class="form-control" name="brand"
+                                    data-validation="required,min,max" data-min="2" data-max="100">
+                                <small id="brand_error"></small>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Description</label>
+                            <textarea class="form-control" name="description" rows="4" data-validation="required max"
+                                data-max="2000"></textarea>
+                            <small id="description_error"></small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Long Description</label>
+                            <textarea class="form-control" name="long_description" rows="5"
+                                data-validation="required max" data-max="10000"></textarea>
+                            <small id="long_description_error"></small>
+                        </div>
+
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label">Price</label>
+                                <input type="number" step="0.01" min="0.01" class="form-control" name="price"
+                                    required data-validation="required">
+                                <small id="price_error"></small>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Discount (%)</label>
+                                <input type="number" step="1" min="0" max="30" class="form-control" name="discount"
+                                    value="0" data-validation="required,number">
+                                <small id="discount_error"></small>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Stock</label>
+                            <input type="number" step="1" min="0" class="form-control" name="stock"
+                                data-validation="required,number">
+                            <small id="stock_error"></small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Main Image</label>
+                            <input type="file" class="form-control" name="main_image" accept=".jpg,.jpeg,.png,.webp"
+                                data-validation="required,fileSize,fileType" data-filesize-mb="2"
+                                data-filetype="image/jpeg,image/png,image/jpg,image/jpeg,image/webp">
+                            <small id="main_image_error"></small>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">Gallery Images</label>
+                            <input type="file" class="form-control" name="gallery_images[]"
+                                accept=".jpg,.jpeg,.png,.webp" multiple data-validation="required,fileSize,fileType"
+                                data-filesize-mb="2"
+                                data-filetype="image/jpeg,image/png,image/jpg,image/jpeg,image/webp"
+                                data-error="#gallery_images_error">
+                            <small id="gallery_images_error"></small>
+                        </div>
+
+                        <div class="mb-2">
+                            <label class="form-label">Status</label>
+                            <select class="form-select" name="status" data-validation="required,select">
+                                <option value="Active" selected>Active</option>
+                                <option value="Inactive">Inactive</option>
+                            </select>
+                            <small id="status_error"></small>
+                        </div>
+                    </div>
+                    <div class="modal-footer mt-auto">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        <button type="submit" class="btn btn-primary">Save product</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
 
     <br>
 
     <?php
-    $selectStmt = $connection->prepare("CALL sp_products_read()");
+    include_once 'db_config.php';
+
+    // Select all products from the database
+
+    // $query = "SELECT * FROM products";
+    // $selectStmt = $connection->prepare($query);
+    // $selectStmt->execute();
+    // $result = $selectStmt->get_result();
+
+    // Step 2: Count total rows and compute pagination values.
+
+    $count_query = "SELECT COUNT(*) AS total FROM products";
+    $countStmt = $connection->prepare($count_query);
+
+
+    $countStmt->execute();
+    $countResult = $countStmt->get_result();
+    $totalProducts = (int) (mysqli_fetch_assoc($countResult)['total'] ?? 0);
+    $countStmt->close();
+    flush_stored_results($connection);
+
+    $per_page = 10;
+    $total_pages = max(1, (int) ceil($totalProducts / $per_page));
+    $page = isset($_GET['page']) && is_numeric($_GET['page']) ? (int) $_GET['page'] : 1;
+    if ($page < 1) {
+        $page = 1;
+    }
+    if ($page > $total_pages) {
+        $page = $total_pages;
+    }
+
+    $offset = ($page - 1) * $per_page;
+
+
+    // Step 3: Fetch only the records for the current page.
+    $query = "SELECT * FROM products ORDER BY id LIMIT ?, ?";
+    $selectStmt = $connection->prepare($query);
+    $selectStmt->bind_param("ii", $offset, $per_page);
+
+
     $selectStmt->execute();
     $result = $selectStmt->get_result();
-    // Step 3: Flush remaining result sets from stored procedure calls.
-    flush_stored_results($connection);
+
 
 
     ?>
@@ -116,11 +261,11 @@ include_once 'db_config.php';
                         <td><?= (strtolower((string) $row['status']) === 'active' || $row['status'] == 1) ? 'Active' : 'Inactive' ?>
                         </td>
                         <td>
-                            <!-- View Product Button -->
                             <button class="btn btn-sm btn-primary mb-1" data-bs-toggle="modal"
                                 data-bs-target="#viewProductModal<?= (int) $row['id'] ?>">View</button>
 
                             <!-- View Product Modal -->
+
 
                             <!-- Edit Product Button -->
                             <button class="btn btn-sm btn-warning mb-1" data-bs-toggle="modal"
@@ -155,7 +300,29 @@ include_once 'db_config.php';
         </tbody>
     </table>
 
+    <nav aria-label="Products pagination" id="paginationWrapper">
+        <ul class="pagination justify-content-center">
+            <li class="page-item <?= $page <= 1 ? 'disabled' : '' ?>">
+                <a class="page-link"
+                    href="?<?= http_build_query(['page' => $page - 1]) ?>">Previous</a>
+            </li>
 
+            <?php for ($p = 1; $p <= $total_pages; $p++): ?>
+                <li class="page-item <?= $p === $page ? 'active' : '' ?>">
+                    <a class="page-link"
+                        href="?<?= http_build_query(['page' => $p]) ?>"><?= $p ?></a>
+                </li>
+            <?php endfor; ?>
+
+            <li class="page-item <?= $page >= $total_pages ? 'disabled' : '' ?>">
+                <a class="page-link"
+                    href="?<?= http_build_query(['page' => $page + 1]) ?>">Next</a>
+            </li>
+        </ul>
+    </nav>
     <br>
     <br>
+</div>
+<br>
+<br>
 </div>
