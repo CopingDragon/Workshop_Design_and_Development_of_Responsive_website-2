@@ -23,7 +23,7 @@ CREATE TABLE products (
     image VARCHAR(255) NULL,
     gallery_images JSON NULL,
     status ENUM('Active', 'Inactive') NOT NULL DEFAULT 'Active'
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+);
 
 DROP PROCEDURE IF EXISTS sp_products_insert;
 DROP PROCEDURE IF EXISTS sp_products_read;
